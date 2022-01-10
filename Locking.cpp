@@ -204,18 +204,23 @@ private:
 };
 
 
+template<class Type>
+using ContainedValueType = decltype(*std::cbegin(std::declval<Type>()));
+
+
 template<typename Type, class Mutex, class ReadLock, class WriteLock>
-class LockingHelper<Type, Mutex, ReadLock, WriteLock, std::void_t<decltype(*std::cbegin(std::declval<Type>()))>> :
+class LockingHelper<Type, Mutex, ReadLock, WriteLock, std::void_t<ContainedValueType<Type>>> :
+    // use LockingHelper<Type, Mutex, ReadLock, WriteLock, int> to derive from generic template:
     public LockingHelper<Type, Mutex, ReadLock, WriteLock, int>
 {
-    using UpdateLock = std::conditional_t<isLocking<typename Type::value_type>, ReadLock, WriteLock>;
+    using UpdateLock = std::conditional_t<isLocking<ContainedValueType<Type>>, ReadLock, WriteLock>;
     
     using UpdateLocked = Locked<Type, UpdateLock>;
     
 public:
     
     template<typename...Args>
-    LockingHelper(Args...args) 
+    LockingHelper(Args...args) : LockingHelper<Type, Mutex, ReadLock, WriteLock, int>(args...)
     {}
     
     UpdateLocked getUpdateLocked()
