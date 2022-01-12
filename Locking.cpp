@@ -1,6 +1,6 @@
 #include <shared_mutex>
 
-namespace {
+namespace detail {
 
 // traits:
 
@@ -10,6 +10,9 @@ struct WriteLock
     using Type = std::unique_lock<Mutex>;
 };
 
+template<class Mutex>
+using WriteLockType = typename WriteLock<Mutex>::Type;
+
 
 template<class Mutex>
 struct ReadLock
@@ -17,13 +20,11 @@ struct ReadLock
     using Type = std::unique_lock<Mutex>;
 };
 
-
 template<>
 struct ReadLock<std::shared_timed_mutex>
 {
     using Type = std::shared_lock<std::shared_timed_mutex>;
 };
-
 
 template<>
 struct ReadLock<std::shared_mutex>
@@ -31,50 +32,30 @@ struct ReadLock<std::shared_mutex>
     using Type = std::shared_lock<std::shared_mutex>;
 };
 
+template<class Mutex>
+using ReadLockType = typename ReadLock<Mutex>::Type;
+
 
 template<typename Type, class Mutex, class ReadLock, class WriteLock, class>
-class LockingHelper;
-
+class LockingSFINAE;
 
 template<typename T>
 struct isLockingHelper : std::false_type {};
 
 template <typename... Args>
-struct isLockingHelper<LockingHelper<Args...>> : std::true_type{};
-
-template <typename... Args>
-struct isLockingHelper<LockingHelper<Args...> &> : std::true_type{};
-
-template <typename... Args>
-struct isLockingHelper<const LockingHelper<Args...>> : std::true_type{};
-
-template <typename... Args>
-struct isLockingHelper<const LockingHelper<Args...> &> : std::true_type{};
+struct isLockingHelper<LockingSFINAE<Args...>> : std::true_type {};
 
 template<typename T>
-constexpr bool isLocking = isLockingHelper<T>::value;
+struct isLocking : public isLockingHelper<std::remove_cv_t<std::remove_reference_t<T>>> {};
+
+template<typename T>
+constexpr bool isLockingValue = isLocking<T>::value;
+
 
 // access locked element:
 
 template<typename Type, class Lock>
 class Locked;
-
-template<typename Type, class Lock>
-Type & operator*(Locked<Type, Lock> & lvalue) 
-{
-    return lvalue.element;
-}
-
-
-template<typename Type, class Lock>
-class DereferencedForAssignment;
-
-template<typename Type, class Lock>
-DereferencedForAssignment<Type, Lock> operator*(Locked<Type, Lock> && rvalue) 
-{
-    return {std::move(rvalue)};
-}
-
 
 template<typename Type, class Lock>
 class DereferencedForAssignment
@@ -83,18 +64,18 @@ public:
     
     Type operator=(Type element)
     {
-        lvalue.element = std::move(element);
-        return lvalue.element;
+        m_locked.m_element = std::move(element);
+        return m_locked.m_element;
     }
     
 private:
     
-    Locked<Type, Lock> & lvalue;
+    Locked<Type, Lock> m_locked;
     
-    DereferencedForAssignment(Locked<Type, Lock> && rvalue) : lvalue(rvalue)
+    DereferencedForAssignment(Locked<Type, Lock> locked) : m_locked{std::move(locked)}
     {}   
     
-    friend DereferencedForAssignment<Type, Lock> operator*<Type, Lock>(Locked<Type, Lock> && rvalue);
+    friend Locked<Type, Lock>;
 };
 
 
@@ -103,64 +84,50 @@ private:
 template<typename Type, class Lock>
 class Locked
 {
+    friend DereferencedForAssignment<Type, Lock>;
+    
+    template<typename OtherType, class Mutex, class ReadLock, class WriteLock, class>
+    friend class LockingSFINAE;
+    
 public:
     
     Type * operator->()
     {
-        return &element;
+        return &m_element;
     }
-
-//     would allow rvalue this! -> use friend accepting only lvalue
-//     Type & operator*()
-//     {
-//         return element;
-//     }
+    
+    // Only allow dereferencing as lvalue since the lock is released on destruction:
+    Type & operator*() &
+    {
+        return m_element;
+    }
+    
+    // Allow assigning when dereferencing as rvalue; then hold the lock:
+    DereferencedForAssignment<Type, Lock> operator*() &&
+    {
+        return {std::move(*this)};
+    }
     
     Locked() = delete;
-    
-    Locked(const Locked & other) = delete;
     Locked(Locked & other) = delete;
+    Locked(const Locked & other) = delete;
     Locked(volatile Locked & other) = delete;    
     Locked(const volatile Locked & other) = delete;
     
     Locked(Locked && other) = default;
-    
-    ~Locked()
-    {
-//         if (std::is_same<Lock, std::shared_lock<std::shared_timed_mutex>>::value) { std::cout << "read "; }
-//         if (std::is_same<Lock, std::unique_lock<std::shared_timed_mutex>>::value) { std::cout << "write "; }
-//         if (std::is_const<Type>::value) { std::cout << "const "; }
-//         std::cout << "unlocking " << std::endl;
-    }
+    ~Locked() = default;
     
 private:
     
-    Type & element;
+    Type & m_element;
     
-    Lock lock;
+    Lock m_lock;
     
-    template<typename Caller>
-    Locked(Caller & caller) : 
-        element{caller.element},
-        lock{*caller.mutex}
-    {
-//         if (std::is_same<Lock, std::shared_lock<std::shared_timed_mutex>>::value) { std::cout << "read "; }
-//         if (std::is_same<Lock, std::unique_lock<std::shared_timed_mutex>>::value) { std::cout << "write "; }
-//         if (std::is_const<Type>::value) { std::cout << "const "; }
-//         std::cout << "locked " <<std::endl;
-    }
-    
-    template<typename OtherType, class Mutex, class ReadLock, class WriteLock, class>
-    friend class LockingHelper;
-    
-    // Using the member operator* would allow e.g.: auto elem = *x.getReadLocked(); 
-    // As the temporary is destroyed immediately after this line, elem would have unlocked access!
-    // To prevent this we accept only lvalues for access by the following non-member operator*
-    friend Type & operator*<Type, Lock>(Locked<Type, Lock> & lvalue);
-    
-    // instead of: friend Type & operator*(Locked<Type, Lock> && rvalue);
-    // use: DereferencedForAssignment<Type, Lock> operator*(Locked<Type, Lock> && rvalue) 
-    friend DereferencedForAssignment<Type, Lock>;
+    template<typename Mutex>
+    Locked(Type & element, Mutex & mutex) : 
+        m_element{element},
+        m_lock{mutex}
+    {}
 };
 
 
@@ -168,39 +135,38 @@ private:
 // container for element together with its mutex:
 
 template<typename Type, class Mutex, class ReadLock, class WriteLock, typename = void>
-class LockingHelper
+class LockingSFINAE
 {
     using ReadLocked = Locked<const Type, ReadLock>;
     
     using WriteLocked = Locked<Type, WriteLock>;
     
+    template<typename OtherType, class Lock>
+    friend class Locked;
+    
 public:
-    using type = Type;
     
     template<typename...Args>
-    LockingHelper(Args...args) : 
-        element{args...},
-        mutex{new Mutex}
+    LockingSFINAE(Args...args) : 
+        m_element{args...},
+        m_mutex{std::make_unique<Mutex>()}
     {}
         
     ReadLocked getReadLocked() const
     {
-        return {*this};
+        return {m_element, *m_mutex};
     }
-    
+  
     WriteLocked getWriteLocked()
     {
-        return {*this};
+        return {m_element, *m_mutex};
     }
     
-private:
+protected:
     
-    Type element;
+    Type m_element;
     
-    mutable std::unique_ptr<Mutex> mutex;
-    
-    template<typename OtherType, class Lock>
-    friend class Locked;
+    std::unique_ptr<Mutex> m_mutex;
 };
 
 
@@ -209,35 +175,34 @@ using ContainedValueType = decltype(*std::cbegin(std::declval<Type>()));
 
 
 template<typename Type, class Mutex, class ReadLock, class WriteLock>
-class LockingHelper<Type, Mutex, ReadLock, WriteLock, std::void_t<ContainedValueType<Type>>> :
-    // use LockingHelper<Type, Mutex, ReadLock, WriteLock, int> to derive from generic template:
-    public LockingHelper<Type, Mutex, ReadLock, WriteLock, int>
+class LockingSFINAE<Type, Mutex, ReadLock, WriteLock, std::void_t<ContainedValueType<Type>>> :
+    public LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int /* != void: use generic template. */>
 {
-    using UpdateLock = std::conditional_t<isLocking<ContainedValueType<Type>>, ReadLock, WriteLock>;
+    using UpdateLock = std::conditional_t<isLockingValue<ContainedValueType<Type>>, ReadLock, WriteLock>;
     
     using UpdateLocked = Locked<Type, UpdateLock>;
     
 public:
     
     template<typename...Args>
-    LockingHelper(Args...args) : LockingHelper<Type, Mutex, ReadLock, WriteLock, int>(args...)
+    LockingSFINAE(Args...args) : LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>(args...)
     {}
     
     UpdateLocked getUpdateLocked()
     {
-        return {*this};
+        return {this->m_element, *this->m_mutex};
     }
     
 };
 
-} // namespace
+} // namespace detail
 
 
 template<typename Type, 
     class Mutex = std::shared_timed_mutex, 
-    class ReadLock = typename ReadLock<Mutex>::Type, 
-    class WriteLock = typename WriteLock<Mutex>::Type>
-using Locking = LockingHelper<Type, Mutex, ReadLock, WriteLock>;
+    class ReadLock = typename detail::ReadLockType<Mutex>, 
+    class WriteLock = typename detail::WriteLockType<Mutex>>
+using Locking = detail::LockingSFINAE<Type, Mutex, ReadLock, WriteLock, void>;
 
 
 
@@ -250,31 +215,32 @@ using Locking = LockingHelper<Type, Mutex, ReadLock, WriteLock>;
 template<typename Type>
 class Dummy
 {
-private:
-    Type element;
-    
 public:
-    using type = Type;
     
     template<typename...Args>
     Dummy(Args...args) : 
-        element{args...}
+        m_element{args...}
     {}
         
     const Type * getReadLocked() const
     {
-        return &element;
+        return &m_element;
     }
     
     Type * getUpdateLocked()
     {
-        return &element;
+        return &m_element;
     }
     
     Type * getWriteLocked()
     {
-        return &element;
+        return &m_element;
     }
+    
+private:
+    
+    Type m_element;
+    
 };
 
 
@@ -325,7 +291,6 @@ void write(T & container)
 template<class T>
 void update(T & container)
 {  
-    using ElementLockType = typename T::type::value_type;
     for (int unused=0; unused < 4; ++unused)
     {
         auto lockedContainer = container.getUpdateLocked();
@@ -359,7 +324,7 @@ void measure(const char * msg, T test)
     
     for (int i=0; i<5; ++i) 
     {
-        if (isLocking<decltype(test)>) {
+        if (detail::isLockingValue<decltype(test)>) {
             threads.emplace_back(std::thread{[&]() -> void { write(test); }});
         } else {
             write(test);
@@ -368,7 +333,7 @@ void measure(const char * msg, T test)
     
     for (int i=0; i<10; ++i) 
     {
-        if (isLocking<decltype(test)>)  {
+        if (detail::isLockingValue<decltype(test)>)  {
             threads.emplace_back(std::thread{[&]() -> void { update(test); }});
         } else {
             update(test);
@@ -377,7 +342,7 @@ void measure(const char * msg, T test)
     
     for (int i=0; i<20; ++i) 
     {
-        if (isLocking<decltype(test)>)  {
+        if (detail::isLockingValue<decltype(test)>)  {
             threads.emplace_back(std::thread{[&]() -> void { sum += read(test); }});
         } else {
             read(test);
@@ -396,6 +361,9 @@ void measure(const char * msg, T test)
 
 int main() 
 {    
+    Locking<const int> a;
+    auto x = a.getWriteLocked();
+    
     measure("single threaded, elements = none,         container = none        ", 
          Dummy<std::vector<Dummy<int>>>{});
     
