@@ -40,16 +40,19 @@ template<typename Type, class Mutex, class ReadLock, class WriteLock, class>
 class LockingSFINAE;
 
 template<typename T>
-struct isLockingHelper : std::false_type {};
+struct isLockingIterateHelper : std::false_type {};
 
 template <typename... Args>
-struct isLockingHelper<LockingSFINAE<Args...>> : std::true_type {};
+struct isLockingIterateHelper<LockingSFINAE<Args...>> : std::true_type {};
+
+template <typename Key, typename... Args>
+struct isLockingIterateHelper<std::pair<const Key, LockingSFINAE<Args...>>> : std::true_type {};
 
 template<typename T>
-struct isLocking : public isLockingHelper<std::remove_cv_t<std::remove_reference_t<T>>> {};
+struct isLockingIterate : public isLockingIterateHelper<std::decay_t<T>> {};
 
 template<typename T>
-constexpr bool isLockingValue = isLocking<T>::value;
+constexpr bool isLockingIterateValue = isLockingIterate<T>::value;
 
 
 // access locked element:
@@ -171,16 +174,18 @@ protected:
 
 
 template<class Type>
-using ContainedValueType = decltype(*std::cbegin(std::declval<Type>()));
+using IterateType = decltype(*std::cbegin(std::declval<Type>()));
 
 
 template<typename Type, class Mutex, class ReadLock, class WriteLock>
-class LockingSFINAE<Type, Mutex, ReadLock, WriteLock, std::void_t<ContainedValueType<Type>>> :
+class LockingSFINAE<Type, Mutex, ReadLock, WriteLock, std::void_t<IterateType<Type>>> :
     public LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int /* != void: use generic template. */>
 {
-    using UpdateLock = std::conditional_t<isLockingValue<ContainedValueType<Type>>, ReadLock, WriteLock>;
+    using Iterate = IterateType<Type>;
     
-    using UpdateLocked = Locked<Type, UpdateLock>;
+    using IterateLock = std::conditional_t<isLockingIterateValue<Iterate>, ReadLock, WriteLock>;
+    
+    using IterateLocked = Locked<Type, IterateLock>;
     
 public:
     
@@ -188,12 +193,13 @@ public:
     LockingSFINAE(Args...args) : LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>(args...)
     {}
     
-    UpdateLocked getUpdateLocked()
+    IterateLocked getIterateLocked()
     {
         return {this->m_element, *this->m_mutex};
     }
     
 };
+
 
 } // namespace detail
 
@@ -209,6 +215,7 @@ using Locking = detail::LockingSFINAE<Type, Mutex, ReadLock, WriteLock, void>;
 #include <iostream> 
 #include <thread>
 #include <vector>
+#include <map>
 #include <chrono>
 
 
@@ -227,7 +234,7 @@ public:
         return &m_element;
     }
     
-    Type * getUpdateLocked()
+    Type * getIterateLocked()
     {
         return &m_element;
     }
@@ -276,7 +283,7 @@ void write(T & container)
         auto lockedContainer = container.getWriteLocked();
         for (auto && element : *lockedContainer)
         {
-            volatile int x;
+            volatile int x = 0;
             for (int i=0; i<500; ++i)
             {
                 x += i;
@@ -293,10 +300,10 @@ void update(T & container)
 {  
     for (int unused=0; unused < 4; ++unused)
     {
-        auto lockedContainer = container.getUpdateLocked();
+        auto lockedContainer = container.getIterateLocked();
         for (auto && element : *lockedContainer)
         {
-            volatile int x;
+            volatile int x = 0;
             for (int i=0; i<1000; ++i)
             {
                 x += i;
@@ -324,7 +331,7 @@ void measure(const char * msg, T test)
     
     for (int i=0; i<5; ++i) 
     {
-        if (detail::isLockingValue<decltype(test)>) {
+        if (detail::isLockingIterateValue<decltype(test)>) {
             threads.emplace_back(std::thread{[&]() -> void { write(test); }});
         } else {
             write(test);
@@ -333,7 +340,7 @@ void measure(const char * msg, T test)
     
     for (int i=0; i<10; ++i) 
     {
-        if (detail::isLockingValue<decltype(test)>)  {
+        if (detail::isLockingIterateValue<decltype(test)>)  {
             threads.emplace_back(std::thread{[&]() -> void { update(test); }});
         } else {
             update(test);
@@ -342,7 +349,7 @@ void measure(const char * msg, T test)
     
     for (int i=0; i<20; ++i) 
     {
-        if (detail::isLockingValue<decltype(test)>)  {
+        if (detail::isLockingIterateValue<decltype(test)>)  {
             threads.emplace_back(std::thread{[&]() -> void { sum += read(test); }});
         } else {
             read(test);
@@ -358,12 +365,11 @@ void measure(const char * msg, T test)
 }
 
 
-
 int main() 
 {    
-    Locking<const int> a;
-    auto x = a.getWriteLocked();
-    
+    Locking<std::map<int, Dummy<int>>, std::mutex> x = {};
+    std::cout << typeid(x.getIterateLocked()).name() << std::endl;
+         
     measure("single threaded, elements = none,         container = none        ", 
          Dummy<std::vector<Dummy<int>>>{});
     
