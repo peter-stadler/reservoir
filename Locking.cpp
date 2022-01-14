@@ -77,11 +77,9 @@ class Locked
 public:
 
     Locked() = delete;
-
-    explicit Locked(const Locked & other) = delete;
+    Locked(const Locked & other) = delete;
     Locked & operator=(const Locked & other) = delete;
-
-    explicit Locked(Locked && other) = delete;
+    Locked(Locked && other) = delete;
     Locked & operator=(Locked && other) = delete;
 
     ~Locked() = default;
@@ -161,7 +159,7 @@ public:
     LockingSFINAE & operator=(Other && other) // use is_lvalue_reference_v instead of const Other &.
     {
         Type element = *other.getReadLocked().m_pointer;
-        *this = std::move(element);
+        *getWriteLocked().m_pointer = std::move(element);
         return *this;
     }
 
@@ -178,7 +176,7 @@ public:
     LockingSFINAE & operator=(Other && other)
     {
         Type element = std::move(*other.getWriteLocked().m_pointer);
-        *this = std::move(element);
+        *getWriteLocked().m_pointer = std::move(element);
         return *this;
     }
 
@@ -347,6 +345,8 @@ public:
         m_element = std::move(element);
         return *this;
     }
+    
+    ~Dummy() = default;
 
     const Type * getReadLocked() const
     {
