@@ -87,7 +87,13 @@ public:
     template<class Arg>
     auto operator[](Arg && arg) -> decltype(std::declval<Type &>()[std::declval<Arg>()])
     {
-        return m_pointer[std::forward<Arg>(arg)];
+        return (*m_pointer)[std::forward<Arg>(arg)];
+    }
+
+    template<class...Args>
+    auto operator()(Args&&...args) -> decltype(std::declval<Type &>()(std::declval<Args>()...))
+    {
+        return (*m_pointer)(std::forward<Args>(args)...);
     }
 
     Type * operator->()
@@ -121,9 +127,7 @@ private:
 };
 
 
-
 // container for element together with its mutex:
-
 
 template<class Type, class Mutex, class ReadLock, class WriteLock, class = void>
 class LockingSFINAE
@@ -135,7 +139,7 @@ class LockingSFINAE
 public:
 
     // capture the default constructor among others:
-    template<class...Args>
+    template<class...Args, std::enable_if_t<sizeof...(Args) != 1, bool> = true>
     LockingSFINAE(Args&&...args) :
         m_element{std::forward<Args>(args)...}
     {}
@@ -146,63 +150,82 @@ public:
         m_element{std::forward<Arg>(arg)}
     {}
 
-    // capture the standard copy constructor among others:
-    template<class Other,
-        std::enable_if_t<isLockingValue<Other> && std::is_lvalue_reference_v<Other>, bool> = true>
-    LockingSFINAE(Other && other) : // use is_lvalue_reference_v instead of const Other &.
+    // copy constructors:
+    LockingSFINAE(const Type & element) :
+        m_element{element}
+    {}
+
+    LockingSFINAE(const LockingSFINAE & other) :
         m_element{*other.getReadLocked().m_pointer}
     {}
 
-    // capture the standard copy assignment among others:
-    template<class Other,
-        std::enable_if_t<isLockingValue<Other> && std::is_lvalue_reference_v<Other>, bool> = true>
-    LockingSFINAE & operator=(Other && other) // use is_lvalue_reference_v instead of const Other &.
+    template<class OtherMutex, class OtherReadLock, class OtherWriteLock>
+    LockingSFINAE(const LockingSFINAE<Type, OtherMutex, OtherReadLock, OtherWriteLock> & other) :
+        m_element{*other.getReadLocked().m_pointer}
+    {}
+
+    // copy assignments:
+//     LockingSFINAE & operator=(const Type & element)
+//     {
+//         *getWriteLocked().m_pointer = element;
+//         return *this;
+//     }
+
+    LockingSFINAE & operator=(const LockingSFINAE & other)
     {
         Type element = *other.getReadLocked().m_pointer;
         *getWriteLocked().m_pointer = std::move(element);
         return *this;
     }
 
-    // capture the standard move constructor among others:
-    template<class Other,
-        std::enable_if_t<isLockingValue<Other> && not std::is_lvalue_reference_v<Other>, bool> = true>
-    LockingSFINAE(Other && other) :
+    template<class OtherMutex, class OtherReadLock, class OtherWriteLock>
+    LockingSFINAE & operator=(const LockingSFINAE<Type, OtherMutex, OtherReadLock, OtherWriteLock> & other)
+    {
+        Type element = *other.getReadLocked().m_pointer;
+        *getWriteLocked().m_pointer = std::move(element);
+        return *this = element;
+    }
+
+    // move constructors:
+    LockingSFINAE(Type && element) :
+        m_element{std::move(element)}
+    {}
+
+    LockingSFINAE(LockingSFINAE && other) :
         m_element{std::move(*other.getWriteLocked().m_pointer)}
     {}
 
-    // capture the standard move assignment among others:
-    template<class Other,
-        std::enable_if_t<isLockingValue<Other> && not std::is_lvalue_reference_v<Other>, bool> = true>
-    LockingSFINAE & operator=(Other && other)
+    template<class OtherMutex, class OtherReadLock, class OtherWriteLock>
+    LockingSFINAE(LockingSFINAE<Type, OtherMutex, OtherReadLock, OtherWriteLock> && other) :
+        m_element{std::move(*other.getWriteLocked().m_pointer)}
+    {}
+
+    // move assignments:
+//     LockingSFINAE & operator=(Type && element)
+//     {
+//         *getWriteLocked().m_pointer = std::move(element);
+//         return *this;
+//     }
+
+    LockingSFINAE & operator=(LockingSFINAE && other)
     {
         Type element = std::move(*other.getWriteLocked().m_pointer);
         *getWriteLocked().m_pointer = std::move(element);
         return *this;
     }
 
-    // conversion from Type:
-    LockingSFINAE(const Type & element) :
-        m_element{element}
-    {}
-
-    LockingSFINAE & operator=(const Type & element)
+    template<class OtherMutex, class OtherReadLock, class OtherWriteLock>
+    LockingSFINAE & operator=(LockingSFINAE<Type, OtherMutex, OtherReadLock, OtherWriteLock> && other)
     {
-        *getWriteLocked().m_pointer = element;
-        return *this;
-    }
-
-    LockingSFINAE(Type && element) :
-        m_element{std::move(element)}
-    {}
-
-    LockingSFINAE & operator=(Type && element)
-    {
+        Type element = std::move(*other.getWriteLocked().m_pointer);
         *getWriteLocked().m_pointer = std::move(element);
         return *this;
     }
 
     // not virtual as polymorphism is unavailable outside (and unused inside) the detail namespace:
     ~LockingSFINAE() = default;
+
+    // ------------------------------------------------------------------------------------------
 
     ReadLocked getReadLocked() const
     {
@@ -234,50 +257,34 @@ class LockingSFINAE<Type, Mutex, ReadLock, WriteLock, std::void_t<IterateType<Ty
 
 public:
 
-    // capture the default constructor among others:
+    // make all 1-argument-constructors but the ones converting from Type/LockingSFINAE explicit:
+    template<class Arg,
+        std::enable_if_t<
+            not isLockingValue<Arg> &&
+            not std::is_same_v<std::decay_t<Arg>, std::decay_t<Type>
+        >, bool> = true>
+    explicit LockingSFINAE(Arg && arg) :
+        LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>{std::forward<Arg>(arg)}
+    {}
+
+    // other constructors including the ones converting from Type/LockingSFINAE:
     template<class...Args>
     LockingSFINAE(Args&&...args) :
         LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>{std::forward<Args>(args)...}
     {}
 
-    // make all 1-argument-constructors but the ones converting from Type/LockingSFINAE explicit:
-    // capture the standard copy and move constructors among others:
-    template<class Arg, std::enable_if_t<not isLockingValue<Arg>, bool> = true>
-    explicit LockingSFINAE(Arg && arg) :
-        LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>{std::forward<Arg>(arg)}
-    {}
-
-    // capture the standard copy and move assignment operators among others:
-    template<class Other, std::enable_if_t<isLockingValue<Other>, bool> = true>
+    // assignment operators:
+    template<class Other>
     LockingSFINAE & operator=(Other && other)
     {
         LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>::operator=(std::forward<Other>(other));
         return *this;
     }
 
-    // conversion from Type:
-    LockingSFINAE(const Type & element) :
-        LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>{element}
-    {}
-
-    LockingSFINAE & operator=(const Type & element)
-    {
-        LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>::operator=(element);
-        return *this;
-    }
-
-    LockingSFINAE(Type && element) :
-        LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>{std::move(element)}
-    {}
-
-    LockingSFINAE & operator=(Type && element)
-    {
-        LockingSFINAE<Type, Mutex, ReadLock, WriteLock, int>::operator=(std::move(element));
-        return *this;
-    }
-
     // not virtual as polymorphism is unavailable outside (and unused inside) the detail namespace:
     ~LockingSFINAE() = default;
+
+    // ------------------------------------------------------------------------------------------
 
     IterateLocked getIterateLocked()
     {
@@ -345,7 +352,7 @@ public:
         m_element = std::move(element);
         return *this;
     }
-    
+
     ~Dummy() = default;
 
     const Type * getReadLocked() const
