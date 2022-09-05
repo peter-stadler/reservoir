@@ -10,7 +10,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace detail {
+namespace Detail {
 
 // passthrough to scalar (SFINAE to distinguish from array), scope locking the corresponding mutex:
 
@@ -35,20 +35,20 @@ public:
     // Get the wrapped element without its lock.
     // CAUTION: The lock is released on destruction of this object; for a temporary object,
     // this will be after the current statement. In contrast, the operator*() enforces an lvalue.
-    Type& get() const noexcept
+    [[nodiscard]] Type& get() const noexcept
     {
         return m_element.get();
     }
 
     // Only allow direct dereferencing as non-temporary (the lock is released on destruction):
-    Type& operator*() const& noexcept
+    [[nodiscard]] Type& operator*() const& noexcept
     {
         return get();
     }
 
     Type& operator*() && = delete;
 
-    Type* operator->() const noexcept
+    [[nodiscard]] Type* operator->() const noexcept
     {
         return &get();
     }
@@ -86,12 +86,12 @@ public:
     // Get the wrapped element without its lock.
     // ATTENTION: The lock is released on destruction of this object; for a temporary object,
     // this will be after the current statement.
-    Type* get() const noexcept
+    [[nodiscard]] Type* get() const noexcept
     {
         return m_element;
     }
 
-    Type& operator[](size_t index) const noexcept
+    [[nodiscard]] Type& operator[](size_t index) const noexcept
     {
         return get()[index];
     }
@@ -102,22 +102,23 @@ private:
     Type* m_element;
 };
 
-} // namespace detail
+} // namespace Detail
 
 // ------------------------------------------------------------------------------------------
 
-template <class Type, class Lock>
-using Locked = detail::Locked<Type, Lock>;
+using Detail::Locked;
 
 // creator functions can partially deduce template (contrary to constructors or deduction guides):
 template <class Lock, class Type, class Mutex, class... Args>
-Locked<Type, Lock> makeLocked(Type& element, Mutex& mutex, Args&&... args) noexcept(std::is_nothrow_constructible_v<Locked<Type, Lock>, Type&, Mutex&, decltype(args)...>)
+[[nodiscard]] Locked<Type, Lock> makeLocked(Type& element, Mutex& mutex, Args&&... args) // mutable
+    noexcept(std::is_nothrow_constructible_v<Locked<Type, Lock>, Type&, Mutex&, decltype(args)...>)
 {
     return { element, mutex, std::forward<Args>(args)... };
 }
 
 template <template <class> class TLock = std::lock_guard, class Type, class Mutex, class... Args>
-Locked<Type, TLock<Mutex>> makeLocked(Type& element, Mutex& mutex, Args&&... args) noexcept(std::is_nothrow_constructible_v<Locked<Type, TLock<Mutex>>, Type&, Mutex&, decltype(args)...>)
+[[nodiscard]] Locked<Type, TLock<Mutex>> makeLocked(Type& element, Mutex& mutex, Args&&... args) // mutable
+    noexcept(std::is_nothrow_constructible_v<Locked<Type, TLock<Mutex>>, Type&, Mutex&, decltype(args)...>)
 {
     return { element, mutex, std::forward<Args>(args)... };
 }
@@ -133,14 +134,13 @@ Locked<Type, TLock<Mutex>> makeLocked(Type& element, Mutex& mutex, Args&&... arg
 template <class, class, class, class>
 class Locking;
 
-
-namespace detail {
+namespace Detail {
 
 // tags:
 
 struct NoLocking {
-    template<class...Args>
-    NoLocking(Args...) {}
+    template <class... Args>
+    NoLocking(Args...) { }
 };
 
 // ------------------------------------------------------------------------------------------
@@ -192,92 +192,92 @@ using PointerIfUnboundedArrayType = typename PointerIfUnboundedArray<Type>::Type
 
 // ------------------------------------------------------------------------------------------
 
-namespace adl {
+namespace ADL {
     using std::begin;
     template <class Type>
     using IterateType = decltype(*begin(std::declval<Type&>()));
 }
 
-using adl::IterateType;
+using ADL::IterateType;
 
 // ------------------------------------------------------------------------------------------
 
 // conditionals:
 
 template <class, class, class = void>
-struct hasNotDeclaredMutexTypeOrIs : public std::true_type {
+struct HasNotDeclaredMutexTypeOrIs : public std::true_type {
 };
 
 template <class Type, class Mutex>
-struct hasNotDeclaredMutexTypeOrIs<Type, Mutex, std::void_t<typename Type::mutex_type>> : public std::is_same<typename Type::mutex_type, Mutex> {
+struct HasNotDeclaredMutexTypeOrIs<Type, Mutex, std::void_t<typename Type::mutex_type>> : public std::is_same<typename Type::mutex_type, Mutex> {
 };
 
 template <class Type, class Mutex>
-constexpr bool hasNotDeclaredMutexTypeOrIsValue = hasNotDeclaredMutexTypeOrIs<Type, Mutex>::value;
+constexpr bool hasNotDeclaredMutexTypeOrIs = HasNotDeclaredMutexTypeOrIs<Type, Mutex>::value;
 
 // ------------------------------------------------------------------------------------------
 
 template <class, class = void>
-struct isIterable : public std::false_type {
+struct IsIterable : public std::false_type {
 };
 
 template <class Type>
-struct isIterable<Type, std::void_t<IterateType<Type>>> : public std::true_type {
+struct IsIterable<Type, std::void_t<IterateType<Type>>> : public std::true_type {
 };
 
 template <class Type>
-constexpr bool isIterableValue = isIterable<Type>::value;
+constexpr bool isIterable = IsIterable<Type>::value;
 
 // ------------------------------------------------------------------------------------------
 
 template <class>
-struct isDummyLockingHelper : public std::false_type {
+struct IsDummyLockingHelper : public std::false_type {
 };
 
 template <class Type, class ReadLock, class WriteLock>
-struct isDummyLockingHelper<Locking<Type, NoLocking, ReadLock, WriteLock>> : public std::true_type {
+struct IsDummyLockingHelper<Locking<Type, NoLocking, ReadLock, WriteLock>> : public std::true_type {
 };
 
 template <class Type>
-struct isDummyLocking : public isDummyLockingHelper<std::decay_t<Type>> {
+struct IsDummyLocking : public IsDummyLockingHelper<std::decay_t<Type>> {
 };
 
 template <class Type>
-constexpr bool isDummyLockingValue = isDummyLocking<Type>::value;
+constexpr bool isDummyLocking = IsDummyLocking<Type>::value;
 
 // ------------------------------------------------------------------------------------------
 
 template <class>
-struct isLockingHelper : public std::false_type {
+struct IsLockingHelper : public std::false_type {
 };
 
 template <class Type, class Mutex, class ReadLock, class WriteLock>
-struct isLockingHelper<Locking<Type, Mutex, ReadLock, WriteLock>> : public std::true_type {
+struct IsLockingHelper<Locking<Type, Mutex, ReadLock, WriteLock>> : public std::true_type {
 };
 
 template <class Type>
-struct isLocking : public std::conjunction<isLockingHelper<std::decay_t<Type>>, std::negation<isDummyLocking<Type>>> {
+struct IsLocking : public std::conjunction<IsLockingHelper<std::decay_t<Type>>, std::negation<IsDummyLocking<Type>>> {
 };
 
 template <class Type>
-constexpr bool isLockingValue = isLocking<Type>::value;
+constexpr bool isLocking = IsLocking<Type>::value;
 
 // ------------------------------------------------------------------------------------------
 
 template <class Type, class = void>
-struct isIterateLocking : std::false_type {
+struct IsIterateLocking : std::false_type {
 };
 
 template <class Type>
-struct isIterateLocking<Type, std::void_t<IterateType<Type>>> : isLocking<IterateType<Type>> {
+struct IsIterateLocking<Type, std::void_t<IterateType<Type>>> : IsLocking<IterateType<Type>> {
 };
 
 template <class Key, class Value> // for std::{map,multimap,unordered_map,unordered_multimap}
-struct isIterateLocking<std::pair<const Key, Value>> : isIterateLocking<Value> {
+struct IsIterateLocking<std::pair<const Key, Value>> : IsIterateLocking<Value> {
 };
 
 template <class Type>
-constexpr bool isIterateLockingValue = isIterateLocking<Type>::value;
+constexpr bool isIterateLocking = IsIterateLocking<Type>::value;
 
 // ==============================================================================================
 
@@ -293,13 +293,13 @@ class LockingBase {
 
 public:
     template <class... Args>
-    ReadLocked getReadLocked(Args&&... args) const
+    [[nodiscard]] ReadLocked getReadLocked(Args&&... args) const // mutable
         noexcept(std::is_nothrow_constructible_v<ReadLocked, Type&, Mutex&, decltype(args)...>)
     {
         return { this->m_element, this->m_mutex, std::forward<Args>(args)... };
     }
 
-    //TODO
+    // TODO
     /** @brief Get a reference to the container together with a lock on its Mutex.
      * It is intended for modifying the contained elements, while reading (e.g. iterating)
      * the container itself only; cf. https://en.cppreference.com/w/cpp/container#Thread_safety
@@ -318,7 +318,7 @@ public:
      * This is the case for, e.g. std::{map,multimap,unordered_map,unordered_multimap}.
      */
     template <class... Args>
-    WriteLocked getWriteLocked(Args&&... args) // mutable
+    [[nodiscard]] WriteLocked getWriteLocked(Args&&... args) // mutable
         noexcept(std::is_nothrow_constructible_v<WriteLocked, Type&, Mutex&, decltype(args)...>)
     {
         return { this->m_element, this->m_mutex, std::forward<Args>(args)... };
@@ -351,13 +351,12 @@ template <class Type, class Mutex, class ReadLock, class WriteLock>
 class LockingIterable : public LockingBase<Type, Mutex, ReadLock, WriteLock> {
     using Base = LockingBase<Type, Mutex, ReadLock, WriteLock>;
 
-    using IterateLock = std::conditional_t<isIterateLockingValue<Type>, ReadLock, WriteLock>;
-    //NB: isIterateLockingValue<std::vector<bool>> == false.
+    using IterateLock = std::conditional_t<isIterateLocking<Type>, ReadLock, WriteLock>;
+    // NB: isIterateLocking<std::vector<bool>> == false.
 
     using IterateLocked = Locked<Type, IterateLock>;
 
 public:
-
     /** @class Locking
      *  @brief Get a reference to the container together with a lock on its Mutex.
      * It is intended for modifying the contained elements, while reading (e.g. iterating)
@@ -367,23 +366,24 @@ public:
      *
      * @attention Use getWriteLocked(...) for changing the container itself, e.g. to insert, erase,
      * emplace, extract, push_back, pop_back, resize, clear, merge, splice, reverse, sort, ...
-     * @note Often a operator[](...) accesses elements only (and an IterateLock suffices), but in some
-     * cases it can change the container (needing a WriteLock), e.g., the std::map::operator[](Key).
+     * @note Often a operator[](...) accesses elements only (and an IterateLock suffices), but in
+     * some cases it can change the container (needing a WriteLock), e.g. std::map::operator[](Key).
      *
      * @param args... forwarded to the constructor of the IterateLock beside the Mutex.
      *
      * @details
      * Internally, it depends how the Mutex is locked, i.e., what is used as IterateLock:
      *   * If the elements of the container are of type Locking<...> (but not DummyLocking<...>),
-     *     IterateLock = ReadLock is imposed on its Mutex; typically it is a std::shared_lock<...>.
+     *     its Mutex is locked by IterateLock = ReadLock; typically it is a std::shared_lock<...>.
      *     NB: Contrary to getReadLocked(...) the returned reference is not const.
-     *   * If the elements of the container have another type or are DummyLocking<...>, it is the
-     *     same as getWriteLocked(...): IterateLock = WriteLock; typically it is a std::unique_lock.
-     * Hereby, instead of std::pair<const Key, Value> the Value is used as type of the elements.
-     * This is the case for, e.g. std::{map,multimap,unordered_map,unordered_multimap}.
+     *   * If the elements of the container have another type or are DummyLocking<...>, it has the
+     *     same effect as getWriteLocked(...), i.e., the Mutex is locked by IterateLock = WriteLock;
+     *     typically it is a std::unique_lock.
+     * Hereby, instead of std::pair<const Key, Value> the Value itself is used as type of the
+     * elements. This is the case for, e.g. std::{map,multimap,unordered_map,unordered_multimap}.
      */
     template <class... Args>
-    IterateLocked getIterateLocked(Args&&... args) // mutable
+    [[nodiscard]] IterateLocked getIterateLocked(Args&&... args) // mutable
         noexcept(std::is_nothrow_constructible_v<IterateLocked, Type&, Mutex&, decltype(args)...>)
     {
         return { this->m_element, this->m_mutex, std::forward<Args>(args)... };
@@ -391,33 +391,28 @@ public:
 
 protected:
     // forward all constructors:
-    template <class... Args>
-    LockingIterable(Args&&... args) // mutable
-        noexcept(std::is_nothrow_constructible_v<Base, decltype(args)...>)
-        : Base { std::forward<Args>(args)... }
-    {
-    }
+    using Base::Base;
 
     ~LockingIterable() = default;
 };
 
-} // namespace detail
+} // namespace Detail
 
 // ------------------------------------------------------------------------------------------
 
-/// \extends detail::LockingIterable<Type, Mutex, ReadLock, WriteLock>
+/// \extends Detail::LockingIterable<Type, Mutex, ReadLock, WriteLock>
 // public interface (constructors and assignments), inherits getReadLocked() and getWriteLocked();
 // enables getIterateLocked() iff. the Type is iterable.
 template <class Type,
     class Mutex = std::shared_timed_mutex,
-    class ReadLock = detail::ReadLockType<Mutex>,
-    class WriteLock = detail::WriteLockType<Mutex>>
-class Locking : public std::conditional_t<detail::isIterableValue<Type>,
-                    detail::LockingIterable<Type, Mutex, ReadLock, WriteLock>,
-                    detail::LockingBase<Type, Mutex, ReadLock, WriteLock>> {
-    using Base = std::conditional_t<detail::isIterableValue<Type>,
-        detail::LockingIterable<Type, Mutex, ReadLock, WriteLock>,
-        detail::LockingBase<Type, Mutex, ReadLock, WriteLock>>;
+    class ReadLock = Detail::ReadLockType<Mutex>,
+    class WriteLock = Detail::WriteLockType<Mutex>>
+class Locking : public std::conditional_t<Detail::isIterable<Type>,
+                    Detail::LockingIterable<Type, Mutex, ReadLock, WriteLock>,
+                    Detail::LockingBase<Type, Mutex, ReadLock, WriteLock>> {
+    using Base = std::conditional_t<Detail::isIterable<Type>,
+        Detail::LockingIterable<Type, Mutex, ReadLock, WriteLock>,
+        Detail::LockingBase<Type, Mutex, ReadLock, WriteLock>>;
 
     static_assert(std::is_same_v<std::remove_cv_t<Type>, Type>,
         "Locking must contain a non-const, non-volatile Type");
@@ -431,10 +426,10 @@ class Locking : public std::conditional_t<detail::isIterableValue<Type>,
     static_assert(std::is_same_v<std::remove_cv_t<WriteLock>, WriteLock>,
         "Locking must have a non-const, non-volatile WriteLock");
 
-    static_assert(detail::hasNotDeclaredMutexTypeOrIsValue<ReadLock, Mutex>,
+    static_assert(Detail::hasNotDeclaredMutexTypeOrIs<ReadLock, Mutex>,
         "Locking's Mutex must be the same as the mutex_type of its ReadLock");
 
-    static_assert(detail::hasNotDeclaredMutexTypeOrIsValue<WriteLock, Mutex>,
+    static_assert(Detail::hasNotDeclaredMutexTypeOrIs<WriteLock, Mutex>,
         "Locking's Mutex must be the same as the mutex_type of its WriteLock");
 
 public:
@@ -449,7 +444,7 @@ public:
 
     // make all 1-argument-constructors but the ones converting from Type/Locking<Type,...> explicit:
     template <class Arg,
-        std::enable_if_t<!detail::isLockingValue<Arg> && !detail::isDummyLockingValue<Arg>, bool> = true>
+        std::enable_if_t<!Detail::isLocking<Arg> && !Detail::isDummyLocking<Arg>, bool> = true>
     explicit Locking(Arg&& arg) // mutable
         noexcept(std::is_nothrow_constructible_v<Base, decltype(arg)>)
         : Base { std::forward<Arg>(arg) }
@@ -458,7 +453,7 @@ public:
 
     // forward implicit convertibles to Type (for Type=T[] use T* instead):
     template <class Element,
-        std::enable_if_t<std::is_convertible_v<Element, detail::PointerIfUnboundedArrayType<Type>>, bool> = true>
+        std::enable_if_t<std::is_convertible_v<Element, Detail::PointerIfUnboundedArrayType<Type>>, bool> = true>
     Locking(Element&& element) // mutable
         noexcept(std::is_nothrow_constructible_v<Base, decltype(element)>)
         : Base { std::forward<Element>(element) }
@@ -524,11 +519,21 @@ public:
     }
 };
 
+template <class Type, class Mutex, class ReadLock, class WriteLock, class OtherType, class OtherMutex, class OtherReadLock, class OtherWriteLock>
+[[nodiscard]] bool operator==(const Locking<Type, Mutex, ReadLock, WriteLock>& lhs, const Locking<OtherType, OtherMutex, OtherReadLock, OtherWriteLock>& rhs) // mutable
+    noexcept(noexcept(lhs.getReadLocked().get() == rhs.getReadLocked().get()))
+{
+    if (&lhs == &rhs) { // sic: prevent locking both!
+        return true;
+    }
+    return lhs.getReadLocked().get() == rhs.getReadLocked().get();
+}
+
 // Replacement for the Locking class that disables locking, but provides the same interface;
 // usable for easy performance evaluation by changing the declaration only.
 // NB: Internally it is recognized that a DummyLocking class is not really a Locking class.
 template <class Type, class = void, class = void, class = void>
-using DummyLocking = Locking<Type, detail::NoLocking, detail::NoLocking, detail::NoLocking>;
+using DummyLocking = Locking<Type, Detail::NoLocking, Detail::NoLocking, Detail::NoLocking>;
 
 // ==============================================================================================
 // test.cpp
@@ -604,7 +609,7 @@ void measure(const char* msg, T test)
     int sum = 0;
 
     for (int i = 0; i < 5; ++i) {
-        if (detail::isLockingValue<decltype(test)>) {
+        if (Detail::isLocking<decltype(test)>) {
             threads.emplace_back(std::thread { [&]() -> void { write(test); } });
         } else {
             write(test);
@@ -612,7 +617,7 @@ void measure(const char* msg, T test)
     }
 
     for (int i = 0; i < 10; ++i) {
-        if (detail::isLockingValue<decltype(test)>) {
+        if (Detail::isLocking<decltype(test)>) {
             threads.emplace_back(std::thread { [&]() -> void { update(test); } });
         } else {
             update(test);
@@ -620,7 +625,7 @@ void measure(const char* msg, T test)
     }
 
     for (int i = 0; i < 20; ++i) {
-        if (detail::isLockingValue<decltype(test)>) {
+        if (Detail::isLocking<decltype(test)>) {
             threads.emplace_back(std::thread { [&]() -> void { sum += read(test); } });
         } else {
             read(test);
@@ -637,6 +642,8 @@ void measure(const char* msg, T test)
 }
 
 struct X {
+    X(int)
+    noexcept { std::cout << "Xint" << std::endl; }
     X()
     noexcept { std::cout << "X" << std::endl; }
     X(const X&) { std::cout << "cp" << std::endl; }
@@ -651,8 +658,13 @@ struct X {
         std::cout << "m=" << std::endl;
         return *this;
     }
+    ~X() { std::cout << "~X" << std::endl; }
     int x {};
     void operator+(int) { std::cout << "+" << std::endl; }
+};
+struct Y : X {
+    using X::X;
+    Y(double) { }
 };
 
 template <class T>
@@ -665,38 +677,42 @@ auto type_name(T&& t)
 #endif
 }
 
-//not for msvc
-// #include <string_view>
+// not for msvc
+//  #include <string_view>
 //
-// template <typename T>
-// constexpr auto type_name1()
-// {
-//     std::string_view name, prefix, suffix;
-// #ifdef __clang__
-//     name = __PRETTY_FUNCTION__;
-//     prefix = "auto type_name() [T = ";
-//     suffix = "]";
-// #elif defined(__GNUC__)
-//     name = __PRETTY_FUNCTION__;
-//     prefix = "constexpr auto type_name() [with T = ";
-//     suffix = "]";
-// #elif defined(_MSC_VER)
-//     name = __FUNCSIG__;
-//     prefix = "auto __cdecl type_name<";
-//     suffix = ">(void)";
-// #endif
-//     name.remove_prefix(prefix.size());
-//     name.remove_suffix(suffix.size());
-//     return name;
-// }
+//  template <typename T>
+//  constexpr auto type_name1()
+//  {
+//      std::string_view name, prefix, suffix;
+//  #ifdef __clang__
+//      name = __PRETTY_FUNCTION__;
+//      prefix = "auto type_name() [T = ";
+//      suffix = "]";
+//  #elif defined(__GNUC__)
+//      name = __PRETTY_FUNCTION__;
+//      prefix = "constexpr auto type_name() [with T = ";
+//      suffix = "]";
+//  #elif defined(_MSC_VER)
+//      name = __FUNCSIG__;
+//      prefix = "auto __cdecl type_name<";
+//      suffix = ">(void)";
+//  #endif
+//      name.remove_prefix(prefix.size());
+//      name.remove_suffix(suffix.size());
+//      return name;
+//  }
 
-//TODO: test constructors! noexcept
-//TODO: adopt work loads; add/remove some elements, update few/many elements, read few/many elements
-//TODO: split tests off
-//TODO: namespace overall and for traits
+// TODO: test constructors! noexcept
+// TODO: adopt work loads; add/remove some elements, update few/many elements, read few/many elements
+// TODO: split tests off
+// TODO: namespace overall and for traits
+// TODO: modules
 
 int main(int, char**)
 {
+    X x {};
+    Y y { 1. };
+
     // creator functions:
     int i = 0;
     std::shared_mutex m;
@@ -710,7 +726,13 @@ int main(int, char**)
         std::cout << *l << " pst\n";
     }
     {
-        //error: std::cout<<*makeLocked(i, m)<<" pst\n";
+        auto l0 = makeLocked(i, m);
+        // error: auto l1 = std::move(l0);
+        auto l1 = makeLocked<std::shared_lock>(i, m);
+        auto l2 = std::move(l1);
+    }
+    {
+        // error: std::cout<<*makeLocked(i, m)<<" pst\n";
         std::cout << makeLocked(i, m).get() << " pst\n";
     }
 
@@ -739,12 +761,16 @@ int main(int, char**)
         l[1] = 5;
         std::cout << l.get()[1] << " pst\n";
     }
-    return 0;
 
     Locking<X> x1 {};
     const Locking<X> x2 {};
-    x2.getReadLocked();
-    x1 = x2;
+    auto tmp2 = x2.getReadLocked().get();
+
+    Locking<int> i1, i2;
+    bool b1 = i1 == i2;
+#if __cplusplus == 202002L
+    bool b2 = i1 != i2; // is declared automatically
+#endif
 
     //     X z;
     //     Locking<X> y;
@@ -754,16 +780,16 @@ int main(int, char**)
     //     z = y.getReadLocked();
     //     z = y.getWriteLocked();
 
-    //not for msvc
-    //         Locking<std::array<int, 3>> js;
-    //         std::cout << type_name(js.getIterateLocked()->operator[](0)) << std::endl;
-    //         auto jsl = js.getReadLocked();
-    //         for (auto j : *jsl) {
-    //             std::cout << j << std::endl;
-    //         }
+    // not for msvc
+    //          Locking<std::array<int, 3>> js;
+    //          std::cout << type_name(js.getIterateLocked()->operator[](0)) << std::endl;
+    //          auto jsl = js.getReadLocked();
+    //          for (auto j : *jsl) {
+    //              std::cout << j << std::endl;
+    //          }
     //
-    //     Locking<int, std::mutex, std::lock_guard<std::mutex>, std::lock_guard<std::mutex>> x {};
-    //     auto read = x.getReadLocked();
+    //      Locking<int, std::mutex, std::lock_guard<std::mutex>, std::lock_guard<std::mutex>> x {};
+    //      auto read = x.getReadLocked();
 
     std::vector<double> testx1 { 1, 2 };
     Locking<std::vector<Locking<double>>> test1 { 1, 2 };
